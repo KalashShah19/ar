@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AR FPS Shooter</title>
+  <style>
+    /* Reset & full-screen layout */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: sans-serif; }
+    
+    /* Start Screen: Gun Selection */
+    #startScreen {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      background: #111;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+    }
+    #startScreen h1, #startScreen p { color: #fff; }
+    #gunButtons {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    #gunButtons button {
+      padding: 10px 20px;
+      font-size: 18px;
+      cursor: pointer;
+    }
+    
+    /* Game Screen */
+    #gameScreen {
+      display: none;
+      position: absolute;
+      width: 100%;
+      height: 100%;
+    }
+    /* Camera feed fills the background */
+    #camera {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      z-index: 1;
+    }
+    /* Canvas overlay for bullets/enemies */
+    #gameCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 2;
+    }
+    /* HUD display */
+    #hud {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #fff;
+      font-size: 18px;
+      z-index: 3;
+    }
+    /* Bottom controls */
+    #controls {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 3;
+      display: flex;
+      gap: 10px;
+    }
+    #controls button {
+      padding: 10px 20px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    /* Scope overlay for sniper (AWM) */
+    #scopeOverlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.5);
+      border-radius: 50%;
+      z-index: 4;
+      display: none;
+    }
+    /* Red dot for non-sniper guns */
+    #redDot {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 8px;
+      height: 8px;
+      background: red;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 4;
+      display: none;
+    }
+    /* Indicator when player is in cover */
+    #coverIndicator {
+      position: absolute;
+      bottom: 100px;
+      right: 20px;
+      color: yellow;
+      font-size: 18px;
+      z-index: 4;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <!-- Start Screen / Gun Selection -->
+  <div id="startScreen">
+    <h1>AR FPS Shooter</h1>
+    <p>Select Your Gun:</p>
+    <div id="gunButtons">
+      <button data-gun="AK47">AK47 (30 Bullets)</button>
+      <button data-gun="M416">M416 (30 Bullets)</button>
+      <button data-gun="UMP">UMP (25 Bullets)</button>
+      <button data-gun="AWM">AWM (Sniper - 5 Bullets)</button>
+    </div>
+  </div>
+  
+  <!-- Game Screen -->
+  <div id="gameScreen">
+    <!-- Camera video feed -->
+    <video id="camera" autoplay playsinline></video>
+    <!-- Canvas overlay -->
+    <canvas id="gameCanvas"></canvas>
+    <!-- HUD -->
+    <div id="hud">
+      <div id="hpDisplay">HP: 100</div>
+      <div id="scoreDisplay">Score: 0</div>
+      <div id="ammoDisplay">Ammo: 0</div>
+    </div>
+    <!-- Bottom control buttons -->
+    <div id="controls">
+      <button id="shootBtn">Shoot</button>
+      <button id="aimBtn">Aim</button>
+      <button id="reloadBtn">Reload</button>
+      <button id="coverBtn">Cover</button>
+    </div>
+    <!-- Overlays -->
+    <div id="scopeOverlay"></div>
+    <div id="redDot"></div>
+    <div id="coverIndicator">In Cover</div>
+  </div>
+  
+  <script>
+    /* ========= Global Game Variables ========= */
+    let playerHP = 100;
+    let score = 0;
+    let inCover = false;
+    let currentGun = null;
+    let lastShotTime = 0;
+    let ammo = 0;
+    let isReloading = false;
+    
+    // Gun properties: maxBullets, reloadTime (ms), damage, fireRate (ms between shots)
+    const guns = {
+      "AK47": { maxBullets: 30, reloadTime: 2000, damage: 20, fireRate: 200 },
+      "M416": { maxBullets: 30, reloadTime: 2000, damage: 22, fireRate: 180 },
+      "UMP":  { maxBullets: 25, reloadTime: 1500, damage: 18, fireRate: 150 },
+      "AWM":  { maxBullets: 5, reloadTime: 3000, damage: 80, fireRate: 1000 }
+    };
+    
+    // Arrays for bullets and enemy bots
+    let bullets = [];
+    let enemies = [];
+    
+    /* ========= DOM Elements ========= */
+    const startScreen = document.getElementById('startScreen');
+    const gameScreen  = document.getElementById('gameScreen');
+    const gunButtons  = document.querySelectorAll('#gunButtons button');
+    
+    const camera    = document.getElementById('camera');
+    const canvas    = document.getElementById('gameCanvas');
+    const ctx       = canvas.getContext('2d');
+    
+    const hpDisplay    = document.getElementById('hpDisplay');
+    const scoreDisplay = document.getElementById('scoreDisplay');
+    const ammoDisplay  = document.getElementById('ammoDisplay');
+    
+    const shootBtn   = document.getElementById('shootBtn');
+    const aimBtn     = document.getElementById('aimBtn');
+    const reloadBtn  = document.getElementById('reloadBtn');
+    const coverBtn   = document.getElementById('coverBtn');
+    
+    const scopeOverlay = document.getElementById('scopeOverlay');
+    const redDot       = document.getElementById('redDot');
+    const coverIndicator = document.getElementById('coverIndicator');
+    
+    /* ========= Gun Selection ========= */
+    gunButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const gunType = btn.getAttribute('data-gun');
+        // Clone the chosen gun properties and add its name
+        currentGun = Object.assign({ name: gunType }, guns[gunType]);
+        ammo = currentGun.maxBullets;
+        updateHUD();
+        // Hide start screen and show game screen
+        startScreen.style.display = 'none';
+        gameScreen.style.display  = 'block';
+        // Start camera & game loop
+        startCamera();
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+        // Spawn an enemy immediately, then let the loop spawn more
+        spawnEnemy();
+        gameLoop();
+      });
+    });
+    
+    /* ========= Camera Setup ========= */
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: 'environment' },
+          audio: false 
+        });
+        camera.srcObject = stream;
+      } catch (error) {
+        alert("Camera error: " + error);
+      }
+    }
+    
+    /* ========= Canvas Resize ========= */
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    
+    /* ========= Classes ========= */
+    // Bullet class: fired from the center in a fixed direction
+    class Bullet {
+      constructor(x, y, dx, dy, damage) {
+        this.x = x;
+        this.y = y;
+        this.dx = dx;
+        this.dy = dy;
+        this.radius = 5;
+        this.damage = damage;
+      }
+      update() {
+        this.x += this.dx;
+        this.y += this.dy;
+      }
+      draw() {
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctx.fillStyle = "yellow";
+        ctx.fill();
+      }
+    }
+    
+    // Enemy class: robot bot that moves toward the player (center)
+    class Enemy {
+      constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.radius = 20;
+        this.speed = 1 + Math.random();  // random speed factor
+        this.attackCooldown = 1000; // ms between attacks
+        this.lastAttack = 0;
+      }
+      update() {
+        // Move enemy toward the center (player's position)
+        const targetX = canvas.width / 2;
+        const targetY = canvas.height / 2;
+        const angle = Math.atan2(targetY - this.y, targetX - this.x);
+        this.x += Math.cos(angle) * this.speed;
+        this.y += Math.sin(angle) * this.speed;
+      }
+      draw() {
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctx.fillStyle = "red";
+        ctx.fill();
+      }
+      attack() {
+        const now = Date.now();
+        if (now - this.lastAttack > this.attackCooldown) {
+          this.lastAttack = now;
+          // If enemy is close to center and player is not in cover, inflict damage
+          const dist = Math.hypot(this.x - canvas.width/2, this.y - canvas.height/2);
+          if (dist < 50 && !inCover) {
+            playerHP -= 10; // enemy attack damage
+            updateHUD();
+            return true;  // enemy has attacked (and will be removed)
+          }
+        }
+        return false;
+      }
+    }
+    
+    /* ========= Spawning Enemies ========= */
+    // Spawn an enemy at a random edge of the screen
+    function spawnEnemy() {
+      let x, y;
+      const edge = Math.floor(Math.random() * 4);
+      if (edge === 0) { // top
+        x = Math.random() * canvas.width;
+        y = -30;
+      } else if (edge === 1) { // right
+        x = canvas.width + 30;
+        y = Math.random() * canvas.height;
+      } else if (edge === 2) { // bottom
+        x = Math.random() * canvas.width;
+        y = canvas.height + 30;
+      } else { // left
+        x = -30;
+        y = Math.random() * canvas.height;
+      }
+      enemies.push(new Enemy(x, y));
+    }
+    
+    /* ========= Shooting ========= */
+    shootBtn.addEventListener('click', shoot);
+    
+    function shoot() {
+      if (isReloading) return;
+      const now = Date.now();
+      if (now - lastShotTime < currentGun.fireRate) return;  // enforce fire rate
+      if (ammo <= 0) { reload(); return; }
+      
+      lastShotTime = now;
+      // Create bullet at center of canvas
+      const startX = canvas.width / 2;
+      const startY = canvas.height / 2;
+      // For simplicity the bullet will travel “forward” (upward). In a real AR game the phone’s aim would set the direction.
+      const bulletSpeed = 10;
+      const angle = -Math.PI / 2;
+      const dx = bulletSpeed * Math.cos(angle);
+      const dy = bulletSpeed * Math.sin(angle);
+      bullets.push(new Bullet(startX, startY, dx, dy, currentGun.damage));
+      ammo--;
+      updateHUD();
+      if (ammo <= 0) reload();
+    }
+    
+    /* ========= Reload ========= */
+    reloadBtn.addEventListener('click', reload);
+    
+    function reload() {
+      if (isReloading) return;
+      isReloading = true;
+      reloadBtn.disabled = true;
+      // Simulate reload delay based on current gun
+      setTimeout(() => {
+        ammo = currentGun.maxBullets;
+        isReloading = false;
+        reloadBtn.disabled = false;
+        updateHUD();
+      }, currentGun.reloadTime);
+    }
+    
+    /* ========= Aiming ========= */
+    let aiming = false;
+    aimBtn.addEventListener('click', () => {
+      aiming = !aiming;
+      if (currentGun.name === "AWM") {
+        // For sniper, toggle a scope overlay (a circular mask)
+        scopeOverlay.style.display = aiming ? "block" : "none";
+      } else {
+        // For other guns, show a red dot at the center
+        redDot.style.display = aiming ? "block" : "none";
+      }
+    });
+    
+    /* ========= Cover ========= */
+    coverBtn.addEventListener('click', () => {
+      inCover = !inCover;
+      coverIndicator.style.display = inCover ? "block" : "none";
+    });
+    
+    /* ========= HUD Update ========= */
+    function updateHUD() {
+      hpDisplay.textContent    = "HP: " + playerHP;
+      scoreDisplay.textContent = "Score: " + score;
+      ammoDisplay.textContent  = "Ammo: " + ammo;
+    }
+    
+    /* ========= Main Game Loop ========= */
+    function gameLoop() {
+      // Clear canvas overlay
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Update & draw bullets
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
+        b.update();
+        b.draw();
+        // Remove bullet if off-screen
+        if (b.x < 0 || b.x > canvas.width || b.y < 0 || b.y > canvas.height) {
+          bullets.splice(i, 1);
+        }
+      }
+      
+      // Update & draw enemies
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const enemy = enemies[i];
+        enemy.update();
+        enemy.draw();
+        // Check collision: bullet vs enemy
+        for (let j = bullets.length - 1; j >= 0; j--) {
+          const b = bullets[j];
+          const dist = Math.hypot(enemy.x - b.x, enemy.y - b.y);
+          if (dist < enemy.radius + b.radius) {
+            // Enemy is hit: remove both and increase score
+            enemies.splice(i, 1);
+            bullets.splice(j, 1);
+            score++;
+            updateHUD();
+            break;
+          }
+        }
+        // Check enemy attack (if enemy is very close to center)
+        const d = Math.hypot(enemy.x - canvas.width/2, enemy.y - canvas.height/2);
+        if (d < enemy.radius + 30) {
+          if (enemy.attack()) {
+            enemies.splice(i, 1);
+          }
+        }
+      }
+      
+      // Occasionally spawn new enemies
+      if (Math.random() < 0.02) spawnEnemy();
+      
+      // Check for game over
+      if (playerHP <= 0) {
+        alert("Game Over! Your score: " + score);
+        location.reload();
+        return;
+      }
+      
+      requestAnimationFrame(gameLoop);
+    }
+  </script>
+</body>
+</html>
